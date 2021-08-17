@@ -1,0 +1,100 @@
+<html>
+<head>
+   <script src="comm/socket.io.js"></script>
+   <script src="comm/comm.js"></script>
+   <script src="utils/utils.js"></script>
+</head>
+<body onload="javascript:initForm();">
+
+<script>
+
+var currentPeerList = new Object();
+
+function receiveMessage(address, payload) {
+  console.log("Message received from " + address + " :- " + payload.type + ":" + payload.data);
+  if (payload.type == "PEER_LIST") {
+     setPeerList(payload.data);
+  } else if (payload.type == "SUM_REQUEST") {
+     processSumRequest(address, payload.data);
+  } else if (payload.type == "SUM_RESPONSE") {
+     processSumResponse(address, payload.data);
+  }
+}
+
+function processSumResponse(address, sumResponse) {
+  console.log("SUM RESPONSE, address: " + address + " sumResponse: " + sumResponse.result);
+  document.getElementById('resultField').value = parseInt(document.getElementById('resultField').value) + sumResponse.result;
+}
+
+function processSumRequest(address, sumRequest) {
+  var sequenceNo = sumRequest.sequenceNo;
+  var sumData = eval("[" + sumRequest.data + "]");
+  var sum = 0;
+  for (i in sumData) {
+    sum += parseInt(sumData[i]);
+  }
+  var payload = { type:"SUM_RESPONSE", data: { sequenceNo:sequenceNo, result:sum }};
+  console.log("Returning sum: " + sum + " to address: " + address);
+  sendMessage(address, payload);
+}
+
+function setPeerList(peerList) {
+  currentPeerList = peerList;
+  document.getElementById('peerList').value = currentPeerList;
+}
+
+function initForm() {
+  var address = generateAddress();
+  init_comm(address, receiveMessage);
+  document.getElementById('addressField').value = address;
+}
+
+function splitToArrays(inputDataArray, size) {
+  var result = [];
+  for (i = 0; i < size; i++) {
+    result[i] = [];
+  }
+  for (i in inputDataArray) {
+    result[i % size].push(inputDataArray[i]);
+  }
+  return result;
+}
+
+function process() {
+  var inputDataArray = eval("[" + document.getElementById('inputText').value + "]");
+  var npeers = currentPeerList.length;
+  var dataSegments = splitToArrays(inputDataArray, npeers);
+  for (i = 0; i < npeers; i++) {
+    var payload = { type:"SUM_REQUEST", data: { sequenceNo:1, data:dataSegments[i] }};
+    sendMessage(currentPeerList[i], payload);
+  }  
+  document.getElementById('resultField').value = "0";
+}
+
+function populateInput() {
+  var inputField = document.getElementById('inputText');
+  var data = [];
+  for (i = 0; i < 100000; i++) {
+    data.push(Math.floor(Math.random() * 1000));
+  }
+  inputField.value = data;
+}
+
+</script> 
+
+<h2>[p2p-js] Demo - Calculate Sum</h2>
+
+<form name="form1">
+
+My Address:- <br/> <input size="35" readonly="true" type="text" id="addressField" name="addressField" value="" /><br/><br/>
+
+Peer List:- <br/> <textarea cols="35" readonly="true" type="text" id="peerList" name="peerList" value=""></textarea><br/><br/>
+
+Input:- <input type="button" value="Generate Data" onclick="javascript:populateInput();" /><br/> <textarea rows="10" cols="50" type="text" id="inputText" name="inputText"></textarea> <br/><br/>
+
+Result: <input type="button" value="Process" onclick="javascript:process();" /><br/><input size="35" readonly="true" type="text" id="resultField" name="resultField" value="" /><br/><br/>
+
+</form>
+
+</body>
+</html>

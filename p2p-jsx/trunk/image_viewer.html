@@ -1,0 +1,34 @@
+
+<html>
+
+<meta http-equiv="refresh" content="0.5">
+
+<script>
+
+function init() {
+    var data = window.opener.document.form1.image_data;
+    var canvas = document.createElement("canvas");
+    canvas.width = data.width;
+    canvas.height = data.height;
+    var context = canvas.getContext('2d');
+    var imageData = context.createImageData(data.width, data.height);
+    for (var i = 0; i < data.data.length; i++) {
+        imageData.data[i] = data.data[i];
+    }
+    context.putImageData(imageData, 0, 0);
+    var dataURL = canvas.toDataURL();  
+    var image = document.getElementById("image_x");
+    image.src = dataURL;
+    image.width = data.width;
+    image.height = data.height;
+}
+
+</script>
+
+<body onload="javascript: init();">
+
+<image src="" id="image_x"></image>
+
+</body>
+
+</html>

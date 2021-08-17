@@ -1,0 +1,197 @@
+<html>
+<head>
+   <script src="comm/socket.io.js"></script>
+   <script src="comm/comm.js"></script>
+   <script src="utils/utils.js"></script>
+   <script src="BigInt.js"></script>
+</head>
+<body onload="javascript:initForm();">
+
+<script>
+
+var worker1 = null;
+var myAddress = null;
+var dhtAddress = null;
+var messageBuffer = new Array();
+var dbSize = 1024 * 1024 * 5;
+
+var db1 = openDatabase('p2pjs_db1', '1.0', 'P2PJS Temp Database', dbSize); 
+var db2 = openDatabase('p2pjs_db2', '1.0', 'P2PJS Temp Database', dbSize); 
+var db3 = openDatabase('p2pjs_db3', '1.0', 'P2PJS Temp Database', dbSize); 
+
+function guid() {
+  var x = randBigInt(128, 0);
+  return bigInt2str(x, 16);
+}
+
+function receiveMessage(address, payload) {
+  if (payload.type == "SET_VARIABLE") {
+      setVariable(payload.data.name, payload.data.value);
+  } else if (payload.type == "DHT") {
+      receiveDHTMessage(address, payload);
+  }
+}
+
+function messageProcessorStateOnSuccess(tx, rs) {
+    var msg = messageBuffer.pop();
+    if (JSON.parse(rs.rows.item(0).busy)) {
+        console.log("AAAAAAAAAA1");
+        addToMessageQueue(msg);
+        console.log("AAAAAAAAAA2");
+    } else {
+        worker1.postMessage(msg);
+    }
+}
+
+function doMessageProcessor() {
+    db3.transaction(function(tx) { 
+      tx.executeSql("SELECT busy FROM MPSTATE WHERE host = ?", [myAddress], messageProcessorStateOnSuccess);
+    });
+}
+
+function sendMessageToMP(msg) {
+    messageBuffer.push(msg);
+    doMessageProcessor();
+}
+
+function receiveDHTMessage(address, payload) {
+  var msg = new Object();
+  msg.type = "DATA";
+  msg.data = new Object();
+  msg.data.address = address;
+  msg.data.payload = payload.data;
+  sendMessageToMP(msg);
+}
+
+function setRemoteVariable(address, name, value) {
+    var msg = new Object();
+    msg.type = "SET_VARIABLE";
+    msg.data = new Object();
+    msg.data.name = name;
+    msg.data.value = value;
+    sendMessage(address, msg);
+}
+
+function setVariable(name, value) {
+  db1.transaction(function(tx) {
+    tx.executeSql("INSERT OR REPLACE INTO MEMORY (correlationId, value) VALUES (?,?)", [name, JSON.stringify(value)]) ; 
+  }) ;
+}
+
+function initMemory() {
+  db1.transaction(function(tx) {
+    tx.executeSql("CREATE TABLE IF NOT EXISTS MEMORY(correlationId TEXT, value TEXT)", []);
+  });
+}
+
+function initMessagesDB() {
+  db2.transaction(function(tx) {
+    tx.executeSql("CREATE TABLE IF NOT EXISTS MESSAGES(id TEXT, msg TEXT, host TEXT)", []);
+  });
+  db3.transaction(function(tx) {
+    tx.executeSql("CREATE TABLE IF NOT EXISTS MPSTATE(busy BOOLEAN, host TEXT)", []);
+  });
+  db3.transaction(function(tx) {
+    tx.executeSql("INSERT OR REPLACE INTO MPSTATE(busy, host) VALUES (?,?)", [false, myAddress]);
+  });
+}
+
+function addToMessageQueue(msg) {
+    db2.transaction(function(tx) {
+        tx.executeSql("INSERT INTO MESSAGES(id,msg,host) VALUES (?,?,?)", [guid(), JSON.stringify(msg), myAddress]);
+    });
+}
+
+function initForm() {
+  myAddress = generateAddress();
+  document.getElementById('addressField').value = myAddress;
+  initMemory();
+  initMessagesDB();
+}
+
+function bootstrap() {
+  var bootstrapAddress = document.getElementById('toAddressText').value;
+  init_comm(myAddress, receiveMessage);
+  worker1 = new Worker("message_processor.js");
+  worker1.abc = new Object();
+  worker1.onmessage = function(event) {
+    var msg = event.data;
+    if (msg.type == "DATA") {
+        var data = msg.data;
+        sendMessage(data.address, data.payload);
+    } else if (msg.type == "PRINT") {
+        //document.getElementById('valueArea').value = msg.data;
+        console.log(msg.data);
+    } else if (msg.type == "SET_DHT_ADDRESS") {
+        dhtAddress = msg.data;
+    }
+  };
+  sendMessageToMP({"type":"INIT", "myAddress":myAddress, "bootstrapAddress":bootstrapAddress});
+}
+
+function getResource() {
+  var toAddress = document.getElementById('toAddressText').value;
+  var id = document.getElementById('idText').value;
+  var value = document.getElementById('valueArea').value;
+  var msg = new Object();
+  if (id == "FINGER_TABLE") {
+    msg.type = "GET_FINGER_TABLE";
+  } else if (id == "SUCCESSOR") {
+    msg.type = "GET_SUCCESSOR";
+    msg.data = new Object();
+    msg.data.key = value;
+  } else {
+    msg.type = "GET_RESOURCE";
+    msg.data = new Object();
+    msg.data.id = id;
+  }
+  sendMessageToMP({"type":"PROC", "data":msg});
+}
+
+function putResource() {
+  var toAddress = document.getElementById('toAddressText').value;
+  var id = document.getElementById('idText').value;
+  var value = document.getElementById('valueArea').value;
+  var msg = new Object();
+  msg.type = "PUT_RESOURCE";
+  msg.data = new Object();
+  msg.data.id = id;
+  msg.data.value = value;
+  sendMessageToMP({"type":"PROC", "data":msg});
+}
+
+function deleteResource() {
+  var toAddress = document.getElementById('toAddressText').value;
+  var id = document.getElementById('idText').value;
+  var msg = new Object();
+  msg.type = "DELETE_RESOURCE";
+  msg.data = new Object();
+  msg.data.id = id;
+  sendMessageToMP({"type":"PROC", "data":msg});
+}
+
+
+</script> 
+
+<h2>[p2p-js] Demo - DSM Test</h2>
+
+<form name="form1">
+
+My Address:- <br/> <input size="35" readonly="true" type="text" id="addressField" name="addressField" value="" /><br/><br/>
+
+Bootstrap Address:- <br/> <input size="35" type="text" id="toAddressText" name="toAddressText" value="" /><br/><br/>
+
+ID:- <br/> <input size="35" type="text" id="idText" name="idText" value="" /><br/><br/>
+
+Value:- <br/> <textarea cols="35" rows="5" type="text" id="valueArea" name="valueArea" value=""></textarea><br/><br/>
+
+<input type="button" value="Bootstrap" onclick="javascript:bootstrap();" /><br/>
+<input type="button" value="GET RESOURCE" onclick="javascript:getResource();" />
+<input type="button" value="PUT RESOURCE" onclick="javascript:putResource();" />
+<input type="button" value="DELETE RESOURCE" onclick="javascript:deleteResource();" /><br/>
+
+</form>
+
+</body>
+</html>
+

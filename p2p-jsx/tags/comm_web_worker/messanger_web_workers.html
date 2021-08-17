@@ -1,0 +1,52 @@
+<html>
+<head>
+   <script src="utils/utils.js"></script>
+</head>
+<body onload="javascript:initForm();">
+
+<script>
+
+function receiveMessage(address, payload) {
+  document.getElementById('fromAddressText').value = address;
+  document.getElementById('inMessageArea').value = payload;
+}
+
+function initForm() {
+  var address = generateAddress();
+  console.log("AA");
+  var worker = new Worker("comm/comm_complete.js");
+  worker.onmessage = function(event) {
+    console.log("MMX:" + event.data);
+  };
+  worker.postMessage(address);
+  document.getElementById('addressField').value = address;
+}
+
+function sendRemoteMessage() {
+  var toAddress = document.getElementById('toAddressText').value;
+  var msg = document.getElementById('outMessageArea').value;
+  sendMessage(toAddress, msg);
+}
+
+</script> 
+
+<h2>[p2p-js] Demo - Messanger</h2>
+
+<form name="form1">
+
+My Address:- <br/> <input size="35" readonly="true" type="text" id="addressField" name="addressField" value="" /><br/><br/>
+
+From Address:- <br/> <input size="35" readonly="true" type="text" id="fromAddressText" name="fromAddressText" value="" /><br/><br/>
+
+In Message:- <br/> <textarea cols="35" rows="5" readonly="true" type="text" id="inMessageArea" name="inMessageArea" value=""></textarea><br/><br/>
+
+To Address:- <br/> <input size="35" type="text" id="toAddressText" name="toAddressText" value="" /><br/><br/>
+
+Out Message:- <br/> <textarea cols="35" rows="5" type="text" id="outMessageArea" name="outMessageArea" value=""></textarea><br/><br/>
+
+<input type="button" value="Send Message" onclick="javascript:sendRemoteMessage();" /><br/>
+
+</form>
+
+</body>
+</html>

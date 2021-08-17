@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+   <script src="comm/socket.io.js"></script>
+   <script src="comm/comm.js"></script>
+   <script src="utils/utils.js"></script>
+   <script src="utils/sha1.js"></script>
+   <script src="BigInt.js"></script>
+</head>
+<body onload="javascript:initForm();">
+
+<script>
+
+var message_processor = null;
+var myAddress = null;
+var dbSize = 1024 * 1024 * 5;
+
+var messageBuffer = new Array();
+
+var db1 = openDatabase('p2pjs_db1', '1.0', 'P2PJS Temp Database', dbSize); 
+var db2 = openDatabase('p2pjs_db2', '1.0', 'P2PJS Temp Database', dbSize); 
+var db3 = openDatabase('p2pjs_db3', '1.0', 'P2PJS Temp Database', dbSize);
+
+function guid() {
+    var x = randBigInt(128, 0);
+    return bigInt2str(x, 16);
+}
+
+function receiveMessage(address, payload) {
+    if (payload.type == "SET_VARIABLE") {
+        setVariable(payload.data.name, payload.data.value);
+    } else if (payload.type == "DHT") {
+        receiveDHTMessage(address, payload);
+    } else if (payload.type == "CREATE_WORKERS") {
+        var code = payload.data.code;
+        var workerId = payload.data.workerId;
+        var count = payload.data.count;
+        var originalCount = payload.data.originalCount;
+        startWorkers(code, workerId, count, originalCount, null);
+    }
+}
+
+function messageProcessorStateOnSuccess(tx, rs) {
+    var msg = messageBuffer.pop();
+    if (JSON.parse(rs.rows.item(0).busy)) {
+        addToMessageQueue(msg);
+    } else {
+        message_processor.postMessage(msg);
+    }
+}
+
+function doMessageProcessor() {
+    db3.transaction(function(tx) { 
+      tx.executeSql("SELECT busy FROM MPSTATE WHERE host = ?", [myAddress], messageProcessorStateOnSuccess);
+    });
+}
+
+function sendMessageToMP(msg) {
+    messageBuffer.push(msg);
+    doMessageProcessor();
+}
+
+function receiveDHTMessage(address, payload) {
+    var msg = new Object();
+    msg.type = "DATA";
+    msg.data = new Object();
+    msg.data.address = address;
+    msg.data.payload = payload.data;
+    sendMessageToMP(msg);
+}
+
+function setRemoteVariable(address, name, value) {
+    var msg = new Object();
+    msg.type = "SET_VARIABLE";
+    msg.data = new Object();
+    msg.data.name = name;
+    msg.data.value = value;
+    sendMessage(address, msg);
+}
+
+function setVariable(name, value) {
+    db1.transaction(function(tx) {
+        tx.executeSql("INSERT OR REPLACE INTO MEMORY (correlationId, value) VALUES (?,?)", [name, JSON.stringify(value)]) ; 
+    });
+}
+
+function initMemory() {
+    db1.transaction(function(tx) {
+        tx.executeSql("CREATE TABLE IF NOT EXISTS MEMORY(correlationId TEXT PRIMARY KEY, value TEXT)", []);
+    });
+}
+
+function initMessagesDB() {
+    db2.transaction(function(tx) {
+        tx.executeSql("CREATE TABLE IF NOT EXISTS MESSAGES(id TEXT PRIMARY KEY, msg TEXT, host TEXT)", []);
+    });
+    db3.transaction(function(tx) {
+        tx.executeSql("CREATE TABLE IF NOT EXISTS MPSTATE(busy BOOLEAN, host TEXT PRIMARY KEY)", []);
+    });
+    db3.transaction(function(tx) {
+        tx.executeSql("INSERT OR REPLACE INTO MPSTATE(busy, host) VALUES (?,?)", [false, myAddress]);
+    });
+}
+
+function addToMessageQueue(msg) {
+    db2.transaction(function(tx) {
+        tx.executeSql("INSERT INTO MESSAGES(id,msg,host) VALUES (?,?,?)", [guid(), JSON.stringify(msg), myAddress]);
+    });
+}
+
+function initForm() {
+    myAddress = generateAddress();
+    document.getElementById('addressField').value = myAddress;
+}
+
+function bootstrap() {
+    initMemory();
+    initMessagesDB();
+    var bootstrapAddress = document.getElementById('toAddressText').value;
+    init_comm(myAddress, receiveMessage);
+    message_processor = new Worker("message_processor.js");
+    message_processor.onmessage = function(event) {
+        messageProcessorHandler(event.data);
+    };
+    sendMessageToMP({"type":"INIT", "myAddress":myAddress, "bootstrapAddress":bootstrapAddress});
+}
+
+function messageProcessorHandler(msg) {
+    var msg = event.data;
+    if (msg.type == "DATA") {
+        var data = msg.data;
+        sendMessage(data.address, data.payload);
+    } else if (msg.type == "PRINT") {
+        logText(msg.data);
+    }
+}
+
+function logText(msg) {
+    var logArea = document.getElementById('logArea')
+    logArea.value += msg + "\n";
+    logArea.scrollTop = logArea.scrollHeight;
+}
+
+function workerHandler(msg) {
+    var msg = event.data;
+    if (msg.type == "GET") {
+        var id = msg.data.id;
+        var correlationId = msg.data.correlationId;
+        getResource(id, correlationId);
+    } else if (msg.type == "TSL") {
+        var id = msg.data.id;
+        var correlationId = msg.data.correlationId;
+        testAndSetLock(id, correlationId);
+    } else if (msg.type == "PUT") {
+        var id = msg.data.id;
+        var value = msg.data.value;
+        var correlationId = msg.data.correlationId;
+        putResource(id, value, correlationId);
+    } else if (msg.type == "DELETE") {
+        var id = msg.data.id;
+        var correlationId = msg.data.correlationId;
+        deleteResource(id, value, correlationId);
+    } else if (msg.type == "NEW_WORKERS") {
+        var code = msg.data.code;
+        var workerId = msg.data.workerId;
+        var count = msg.data.count;
+        var originalCount = msg.data.originalCount;
+        var correlationId = msg.data.correlationId;
+        createWorkers(code, workerId, count, correlationId, originalCount);
+    } else if (msg.type == "PRINT") {
+        logText("WORKER: " + msg.data);
+    } else if (msg.type == "SAVE_DATA") {
+        doSaveData(msg.data, msg.mimeType);
+    }
+}
+
+function doSaveData(data, mimeType) {
+    if (mimeType.indexOf("image/") == 0) {
+        doShowImage(data);
+    } else {
+        var url = getURLFromData(data, mimeType);
+        window.open(url, "", "width=150, height=50");
+    }
+}
+
+function doShowImage(data) {
+    document.form1.image_data = data;
+    var win = window.open("image_viewer.html", "", "width=" + (data.width + 20) + ",height=" + (data.height + 20));
+    win.focus();
+}
+
+function getURLFromData(data, mimeType) {
+    var builder = new window.WebKitBlobBuilder();
+    builder.append(JSON.stringify(data));
+    var blob = builder.getBlob();
+    var url = window.webkitURL.createObjectURL(blob);
+    return url;
+}
+
+function startWorkers(code, workerId, count, originalCount, inputDataObj) {
+    var worker = new Worker("worker.js");
+    worker.onmessage = function(event) {
+        workerHandler(event.data);
+    };
+    worker.postMessage({"type":"START", "code":code, "workerId":workerId, "count":count, "originalCount":originalCount, "inputDataObj":inputDataObj});
+}
+
+function createWorkers(code, workerId, count, correlationId, originalCount) {
+    var msg = new Object();
+    msg.type = "CREATE_WORKERS";
+    msg.data = new Object();
+    msg.data.code = code;
+    msg.data.workerId = workerId;
+    msg.data.count = count;
+    msg.data.originalCount = originalCount;
+    sendMessageToMP({"type":"PROCESS_WORKERS", "data":msg, "correlationId":correlationId});
+}
+
+function getResource(id, correlationId) {
+    var msg = new Object();
+    msg.type = "GET_RESOURCE";
+    msg.data = new Object();
+    msg.data.id = id;
+    sendMessageToMP({"type":"PROC", "data":msg, "correlationId":correlationId});
+}
+
+function testAndSetLock(id, correlationId) {
+    var msg = new Object();
+    msg.type = "TSL_RESOURCE";
+    msg.data = new Object();
+    msg.data.id = id;
+    sendMessageToMP({"type":"PROC", "data":msg, "correlationId":correlationId});
+}
+
+function putResource(id, value, correlationId) {
+    var msg = new Object();
+    msg.type = "PUT_RESOURCE";
+    msg.data = new Object();
+    msg.data.id = id;
+    msg.data.value = value;
+    sendMessageToMP({"type":"PROC", "data":msg, "correlationId":correlationId});
+}
+
+function deleteResource(id, correlationId) {
+    var msg = new Object();
+    msg.type = "DELETE_RESOURCE";
+    msg.data = new Object();
+    msg.data.id = id;
+    sendMessageToMP({"type":"PROC", "data":msg, "correlationId":correlationId});
+}
+
+</script> 
+
+<h2>[p2p-js] Job Schedular</h2>
+
+<form name="form1">
+
+My Address:- <br/> <input size="40" readonly="true" type="text" id="addressField" name="addressField" value="" /><br/><br/>
+
+Bootstrap Address:- <br/> <input size="40" type="text" id="toAddressText" name="toAddressText" value="" />
+<input type="button" value="Bootstrap" onclick="javascript:this.disabled=true; bootstrap();" /> <br/><br/>
+
+Log:- <br/> <textarea cols="115" rows="15" readonly="true" type="text" id="logArea" name="logArea" value=""></textarea><br/><br/>
+
+Code:- <br/> <textarea cols="115" rows="25" type="text" id="codeArea" name="codeArea" value=""></textarea><br/><br/>
+
+Worker Count: <input size="10" type="text" id="wcField" name="wcField" value="" /> 
+<div>
+Input Data: <input type="file" id="data_input_file" name="data_input_file" /><br/>
+<output id="data_file_list"></output>
+<input type="button" value="Execute Job" onclick="javascript:executeJob();" /><br/>
+<input type="reset" value="Reset Job" />
+</div>
+
+<hidden id="image_data"></canvas>
+
+</form>
+
+<script>
+
+var reader = null;
+var fileType = null;
+
+function dataFileRead() {
+  try {
+      var inputDataObj = getDataObjectFromContent(reader.result);
+  } catch (e) { logText("Error:" + e); }
+  if (inputDataObj == undefined) {
+      alert("Error: The input data file must contain a valid JSON object / Image file");
+      return;
+  }
+  startWorkers(document.getElementById('codeArea').value, guid(), document.getElementById('wcField').value, document.getElementById('wcField').value, inputDataObj);
+}
+
+function getDataObjectFromContent(data) {
+    var objData = null;
+    if (isImageFile()) {
+        /* image data */
+        objData = getAsImageData(data);
+        if (objData != null) {
+            return objData;
+        }
+    }
+    /* JSON data */
+    objData = getJSONData(data);
+    if (objData == null) {
+        objData = new Object();
+        /* binary data */
+        objData.data = data;
+    }
+    return objData;
+}
+
+function getJSONData(data) {
+    try {
+        return JSON.parse(data);
+    } catch (err) {
+        return null;
+    }
+}
+
+function getAsImageData(data) {
+    try {
+        var image = new Image();
+        image.src = data;
+        while (image.width == undefined || image.width == null || image.width == 0);
+        var canvas = document.createElement('canvas');
+        canvas.width = image.width;
+        canvas.height = image.height;
+        var context = canvas.getContext('2d');
+        //image.onload = function() {
+        //    context.drawImage(image, 0, 0);
+        //};
+        context.drawImage(image, 0, 0);
+        var imgData = context.getImageData(0, 0, image.width, image.height);
+        var objData = new Object();
+        objData.image = imgData;
+        return objData;
+    } catch (error) {
+        console.log("Image Fail: " + error);
+        return null;
+    }
+}
+
+function isImageFile() {
+    return fileType.indexOf("image/") == 0;
+}
+
+function executeJob() {
+  var file = document.getElementById('data_input_file').files[0];
+  if (file != undefined && file != null) {
+      fileType = file.type;
+      reader = new FileReader();
+      reader.onload = dataFileRead;
+      if (isImageFile()) {
+          reader.readAsDataURL(file);
+      } else {
+          reader.readAsBinaryString(file);
+      }
+  } else {
+      startWorkers(document.getElementById('codeArea').value, guid(), document.getElementById('wcField').value, document.getElementById('wcField').value, null);
+  }
+}
+
+</script>
+
+</body>
+</html>
+
